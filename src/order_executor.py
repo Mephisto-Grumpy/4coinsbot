@@ -11,11 +11,12 @@ from pathlib import Path
 from typing import Dict, Optional
 from dataclasses import dataclass
 import concurrent.futures
+from decimal import Decimal, InvalidOperation
 
 from web3 import Web3
 from eth_account import Account
 from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import OrderArgs, OrderType
+from py_clob_client.clob_types import OrderArgs, OrderType, BalanceAllowanceParams, AssetType
 from py_clob_client.order_builder.constants import BUY, SELL
 
 from safety_guard import SafetyGuard
@@ -52,6 +53,63 @@ class OrderResult:
 
 class OrderExecutor:
     """Execute real orders on Polymarket (methods from /root/clip)"""
+    
+    @staticmethod
+    def _normalize_private_key(raw: str) -> str:
+        """
+        Strip quotes/whitespace; accept MetaMask export without 0x (64 hex chars).
+        """
+        key = (raw or "").strip().strip('"').strip("'")
+        if not key:
+            raise ValueError("PRIVATE_KEY is empty")
+        key = key.split("#")[0].strip()
+        low = key.lower()
+        if low.startswith("0x"):
+            hexpart = low[2:]
+        else:
+            hexpart = low
+        if len(hexpart) != 64 or any(c not in "0123456789abcdef" for c in hexpart):
+            raise ValueError(
+                "PRIVATE_KEY must be exactly 64 hex characters (optional 0x prefix)"
+            )
+        return "0x" + hexpart
+    
+    @staticmethod
+    def _normalize_funder_address(raw: str) -> str:
+        """Strip quotes/whitespace and return checksummed Polygon address."""
+        addr = (raw or "").strip().strip('"').strip("'")
+        addr = addr.split("#")[0].strip()
+        if not addr:
+            return ""
+        return Web3.to_checksum_address(addr)
+    
+    @staticmethod
+    def _parse_signature_type(raw: str) -> int:
+        """Parse SIGNATURE_TYPE; ignore inline # comments in .env values."""
+        s = (raw or "0").split("#")[0].strip()
+        return int(s)
+    
+    @staticmethod
+    def _parse_clob_collateral_balance_usd(resp) -> Optional[float]:
+        """
+        Parse /balance-allowance JSON: balance is usually USDC micro-units (6 decimals)
+        as an integer string; if a decimal point is present, treat as USD already.
+        """
+        if not isinstance(resp, dict):
+            return None
+        raw = resp.get("balance")
+        if raw is None:
+            return None
+        try:
+            s = str(raw).strip()
+            if not s:
+                return None
+            d = Decimal(s)
+        except (InvalidOperation, TypeError, ValueError):
+            return None
+        if "." in s or "e" in s.lower():
+            return float(d)
+        return float(d / Decimal("1000000"))
     
     @staticmethod
     def block_market(market_slug: str, coin: str):
@@ -117,19 +175,20 @@ class OrderExecutor:
                 load_dotenv(env_path)
                 
                 # Read PRIVATE_KEY AFTER loading .env
-                self.private_key = os.getenv("PRIVATE_KEY", "")
-                if not self.private_key:
-                    raise ValueError("PRIVATE_KEY not found in .env")
+                self.private_key = self._normalize_private_key(os.getenv("PRIVATE_KEY", ""))
                 
                 # Read signature type and funder address
-                signature_type = int(os.getenv("SIGNATURE_TYPE", "0"))
-                funder_address = os.getenv("FUNDER_ADDRESS", "")
+                signature_type = self._parse_signature_type(os.getenv("SIGNATURE_TYPE", "0"))
+                funder_raw = os.getenv("FUNDER_ADDRESS", "")
+                funder_address = self._normalize_funder_address(funder_raw) if funder_raw.strip() else ""
                 
                 # Get wallet address based on SIGNATURE_TYPE
                 # Type 0: Use address from PRIVATE_KEY (standard EOA wallet)
                 # Type 1/2: Use FUNDER_ADDRESS (Polymarket proxy/smart contract wallet)
                 if signature_type == 0:
-                    self.wallet_address = Account.from_key(self.private_key).address
+                    self.wallet_address = Web3.to_checksum_address(
+                        Account.from_key(self.private_key).address
+                    )
                     wallet_type = "EOA"
                 else:
                     if not funder_address:
@@ -138,7 +197,7 @@ class OrderExecutor:
                     wallet_type = f"Proxy (type {signature_type})"
                 
                 host = os.getenv("CLOB_HOST", "https://clob.polymarket.com")
-                chain_id = int(os.getenv("CHAIN_ID", "137"))
+                chain_id = int(os.getenv("CHAIN_ID", "137").split("#")[0].strip())
                 
                 # Initialize ClobClient with signature type and funder if needed
                 if signature_type == 0:
@@ -268,20 +327,20 @@ class OrderExecutor:
         except Exception as e:
             print(f"[ERROR] Failed to log redeem: {e}")
     
-    def get_wallet_usdc_balance(self) -> Optional[float]:
-        """
-        Get wallet USDC balance (bridged + native)
-        Copy of method from /root/clip/trade.py
-        """
+    def _get_wallet_usdc_onchain(self) -> Optional[float]:
+        """On-chain USDC.e + native USDC at wallet_address (Polygon RPC)."""
         try:
             if not self.wallet_address and self.private_key:
-                self.wallet_address = Account.from_key(self.private_key).address
+                self.wallet_address = Web3.to_checksum_address(
+                    Account.from_key(self.private_key).address
+                )
             
             if not self.wallet_address:
                 print("[EXECUTOR] ❌ No wallet address")
                 return None
             
-            # Use first RPC endpoint for wallet balance queries
+            owner = Web3.to_checksum_address(self.wallet_address)
+            
             rpc_url = self.rpc_endpoints[0] if self.rpc_endpoints else "https://polygon-rpc.com"
             w3 = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={'timeout': self.rpc_single_timeout}))
             
@@ -291,30 +350,46 @@ class OrderExecutor:
             
             total = 0.0
             
-            # USDC.e (bridged) - main Polymarket token
             usdc_e = w3.eth.contract(
                 address=Web3.to_checksum_address(self.USDC_BRIDGED), 
                 abi=self.ERC20_ABI
             )
-            balance_e = usdc_e.functions.balanceOf(self.wallet_address).call()
+            balance_e = usdc_e.functions.balanceOf(owner).call()
             decimals_e = usdc_e.functions.decimals().call()
             total += balance_e / (10 ** decimals_e)
             
-            # Native USDC
             usdc_n = w3.eth.contract(
                 address=Web3.to_checksum_address(self.USDC_NATIVE), 
                 abi=self.ERC20_ABI
             )
-            balance_n = usdc_n.functions.balanceOf(self.wallet_address).call()
+            balance_n = usdc_n.functions.balanceOf(owner).call()
             decimals_n = usdc_n.functions.decimals().call()
             total += balance_n / (10 ** decimals_n)
             
-            print(f"[EXECUTOR] Wallet balance: ${total:.2f}")
+            print(f"[EXECUTOR] On-chain USDC balance: ${total:.2f}")
             return total
             
         except Exception as e:
-            print(f"[EXECUTOR] ❌ Balance query error: {e}")
+            print(f"[EXECUTOR] ❌ On-chain balance query error: {e}")
             return None
+    
+    def get_wallet_usdc_balance(self) -> Optional[float]:
+        """
+        USDC available for Polymarket trading: prefer CLOB /balance-allowance
+        collateral (same source as arbpoly), fallback to on-chain USDC at wallet_address.
+        """
+        if not self.safety.dry_run and self.client is not None:
+            try:
+                params = BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+                resp = self.client.get_balance_allowance(params)
+                usd = self._parse_clob_collateral_balance_usd(resp)
+                if usd is not None:
+                    print(f"[EXECUTOR] CLOB collateral balance: ${usd:.2f}")
+                    return usd
+                print("[EXECUTOR] ⚠ CLOB balance response unusable; falling back to on-chain")
+            except Exception as e:
+                print(f"[EXECUTOR] ⚠ CLOB balance query failed, falling back to on-chain: {e}")
+        return self._get_wallet_usdc_onchain()
     
     def get_pol_balance(self) -> Optional[float]:
         """
@@ -325,11 +400,15 @@ class OrderExecutor:
         """
         try:
             if not self.wallet_address and self.private_key:
-                self.wallet_address = Account.from_key(self.private_key).address
+                self.wallet_address = Web3.to_checksum_address(
+                    Account.from_key(self.private_key).address
+                )
             
             if not self.wallet_address:
                 print("[EXECUTOR] ❌ No wallet address")
                 return None
+            
+            owner = Web3.to_checksum_address(self.wallet_address)
             
             # Use first RPC endpoint for wallet balance queries
             rpc_url = self.rpc_endpoints[0] if self.rpc_endpoints else "https://polygon-rpc.com"
@@ -340,7 +419,7 @@ class OrderExecutor:
                 return None
             
             # Get native balance (in Wei)
-            balance_wei = w3.eth.get_balance(self.wallet_address)
+            balance_wei = w3.eth.get_balance(owner)
             # Convert to POL (1 POL = 10^18 Wei)
             balance_pol = balance_wei / 1e18
             
@@ -371,11 +450,15 @@ class OrderExecutor:
         
         try:
             if not self.wallet_address and self.private_key:
-                self.wallet_address = Account.from_key(self.private_key).address
+                self.wallet_address = Web3.to_checksum_address(
+                    Account.from_key(self.private_key).address
+                )
             
             if not self.wallet_address:
                 print("[EXECUTOR] ❌ No wallet address for token balance query")
                 return None
+            
+            owner = Web3.to_checksum_address(self.wallet_address)
             
             # 🔥 FUNCTION: Request to one RPC endpoint
             def query_single_rpc(rpc_url: str, attempt: int = 1) -> Optional[float]:
@@ -395,7 +478,7 @@ class OrderExecutor:
                     )
                     
                     balance_raw = ctf.functions.balanceOf(
-                        self.wallet_address, 
+                        owner, 
                         int(token_id)
                     ).call()
                     balance = balance_raw / 1e6  # Convert from raw to USDC decimals (6 decimals)
@@ -2140,8 +2223,9 @@ class OrderExecutor:
             )
             
             # Check token balances
-            up_balance = ctf.functions.balanceOf(self.wallet_address, int(up_token_id)).call()
-            down_balance = ctf.functions.balanceOf(self.wallet_address, int(down_token_id)).call()
+            redeem_owner = Web3.to_checksum_address(self.wallet_address)
+            up_balance = ctf.functions.balanceOf(redeem_owner, int(up_token_id)).call()
+            down_balance = ctf.functions.balanceOf(redeem_owner, int(down_token_id)).call()
             
             print(f"[REDEEM] {market_slug}")
             print(f"  UP: {up_balance / 1e6:.2f}, DOWN: {down_balance / 1e6:.2f}")

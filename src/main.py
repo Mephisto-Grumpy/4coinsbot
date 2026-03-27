@@ -350,7 +350,8 @@ def main():
         if not wallet_balance or wallet_balance <= 0:
             print("\n" + "="*80)
             print("❌ ERROR: Cannot read wallet balance or balance is 0!")
-            print("   Check your PRIVATE_KEY in .env and ensure wallet has USDC")
+            print("   Check PRIVATE_KEY, SIGNATURE_TYPE, and FUNDER_ADDRESS in .env")
+            print("   For type 1/2, USDC must be on the FUNDER_ADDRESS (Proxy/Safe) on Polygon")
             print("="*80)
             sys.exit(1)
         
@@ -1139,7 +1140,7 @@ def main():
         dashboard.add_event("Redeem collector active", 'success')
     else:
         print(f"\n[SYSTEM] ⚠️ WARNING: No wallet address, redeem collector disabled")
-        print(f"[SYSTEM]    Check that POLYMARKET_PRIVATE_KEY is set in .env")
+        print(f"[SYSTEM]    Check that PRIVATE_KEY and FUNDER_ADDRESS (if SIGNATURE_TYPE 1/2) are set in .env")
         redeem_collector = None
         dashboard.add_event("Redeem collector disabled (no wallet)", 'warning')
     
