@@ -16,6 +16,8 @@ from dotenv import load_dotenv
 # Load environment variables from .env file in current working directory
 load_dotenv()
 
+DEFAULT_COINS = ('btc', 'eth', 'sol', 'xrp')
+
 
 class DiscordNotifier:
     """
@@ -47,7 +49,9 @@ class DiscordNotifier:
         if self.enabled:
             try:
                 self.webhook = discord.SyncWebhook.from_url(self.webhook_url)
-            except Exception:
+            except Exception as e:
+                safe_hint = self.webhook_url.split("/api/webhooks/")[0] if "/api/webhooks/" in self.webhook_url else "invalid_webhook_url"
+                print(f"[DISCORD] webhook init failed ({safe_hint}): {e}")
                 self.enabled = False
 
         if self.enabled:
@@ -88,8 +92,9 @@ class DiscordNotifier:
                 self.last_send_time = time.time()
             except Empty:
                 continue
-            except Exception:
+            except Exception as e:
                 self.error_count += 1
+                print(f"[DISCORD] worker error: {e}")
 
     def _send(self, message: str) -> bool:
         if not self.enabled or self.webhook is None:
@@ -111,8 +116,9 @@ class DiscordNotifier:
             return
         try:
             self.queue.put_nowait(message)
-        except Exception:
+        except Exception as e:
             self.dropped_count += 1
+            print(f"[DISCORD] queue full, message dropped: {str(e)[:80]}")
 
     def send_market_closed(self, coin: str, trade: Dict, session_stats: Dict, portfolio_stats: Dict = None):
         market_slug = trade.get('market_slug', 'unknown')
@@ -143,8 +149,7 @@ Winner: {winner}"""
 
         if portfolio_stats:
             message += "\n\n━━━━━━━━━━━━━━━\n**🏦 PORTFOLIO**"
-            coins = ['btc', 'eth', 'sol', 'xrp']
-            for c in coins:
+            for c in DEFAULT_COINS:
                 c_pnl = portfolio_stats.get(f'{c}_pnl', 0)
                 c_wr = portfolio_stats.get(f'{c}_wr', 0)
                 c_markets = portfolio_stats.get(f'{c}_markets_played', 0)
@@ -227,7 +232,8 @@ Winner: {winner}"""
             self._next_message_id += 1
             self._messages[message_id] = msg
             return message_id
-        except Exception:
+        except Exception as e:
+            print(f"[DISCORD] send_message_with_buttons error: {e}")
             return None
 
     def edit_message_text(self, message_id: int, text: str, buttons: list = None) -> bool:
@@ -244,13 +250,14 @@ Winner: {winner}"""
         try:
             msg.edit(content=content)
             return True
-        except Exception:
+        except Exception as e:
+            print(f"[DISCORD] edit_message_text error: {e}")
             return False
 
     def answer_callback_query(self, callback_query_id: str, text: str = "", show_alert: bool = False) -> bool:
         return True
 
-    def send_message(self, message: str):
+    def send_message(self, message: str) -> bool:
         if not self.enabled or self.webhook is None:
             return False
         try:

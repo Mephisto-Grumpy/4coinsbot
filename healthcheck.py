@@ -16,8 +16,8 @@ def main():
     try:
         raw = heartbeat_path.read_text().strip()
         heartbeat_ts = int(raw)
-    except Exception:
-        print(f"heartbeat unreadable: {heartbeat_path}")
+    except Exception as e:
+        print(f"heartbeat unreadable: {heartbeat_path} ({e})")
         sys.exit(1)
 
     age = int(time.time()) - heartbeat_ts

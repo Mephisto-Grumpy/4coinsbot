@@ -1827,8 +1827,8 @@ def main():
                     with open(heartbeat_file, 'w') as f:
                         f.write(str(int(now)))
                     last_heartbeat_write = now
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"[HEALTH] heartbeat write error: {e}")
             
             # Process EACH coin independently
             for coin in COINS:
