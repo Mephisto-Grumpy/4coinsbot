@@ -7,6 +7,7 @@ import time
 import json
 import math
 import requests
+import discord
 from pathlib import Path
 from typing import Dict, Optional
 from dataclasses import dataclass
@@ -161,6 +162,8 @@ class OrderExecutor:
         self.safety = safety_guard
         self.config = config
         self.data_feed = data_feed  # ✅ For access to position_tracker
+        self._discord_alert_webhook = None
+        self._discord_alert_webhook_url = None
         
         # Initialize CLOB client
         self.client = None
@@ -1991,8 +1994,11 @@ class OrderExecutor:
             if not webhook_url:
                 return
 
-            payload = {"content": message}
-            requests.post(webhook_url, json=payload, timeout=5)
+            if self._discord_alert_webhook is None or self._discord_alert_webhook_url != webhook_url:
+                self._discord_alert_webhook = discord.SyncWebhook.from_url(webhook_url)
+                self._discord_alert_webhook_url = webhook_url
+
+            self._discord_alert_webhook.send(content=message, wait=True)
         except Exception as e:
             print(f"[EXECUTOR] ⚠️ Discord alert failed: {e}")
     
