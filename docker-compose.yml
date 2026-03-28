@@ -1,0 +1,21 @@
+services:
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fourcoinsbot
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      HEARTBEAT_FILE: /tmp/4coinsbot.heartbeat
+      HEARTBEAT_MAX_AGE_SEC: "120"
+    healthcheck:
+      test: ["CMD", "python", "/app/healthcheck.py"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 90s
+    volumes:
+      - ./logs:/app/logs
+      - ./config:/app/config

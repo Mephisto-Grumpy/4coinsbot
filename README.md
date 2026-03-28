@@ -8,7 +8,7 @@ Automated trading bot for Polymarket 15-minute crypto prediction markets. Trades
 - **Late Entry Strategy** — Enter positions in the last 4 minutes before market close
 - **Real-time WebSocket Data** — Live orderbook updates from Polymarket
 - **Automatic Redeem** — Background collection of winnings after market resolution
-- **Telegram Integration** — Commands for monitoring, charts, balance, and emergency shutdown
+- **Discord Integration** — Notifications and chart delivery via Discord webhook
 - **Safety Guard** — Protection layer with order limits and emergency stop
 - **Position Tracking** — Real-time position monitoring via REST API
 - **Stop-Loss & Flip-Stop** — Configurable exit strategies per coin
@@ -103,9 +103,8 @@ POLYMARKET_API_KEY=your_api_key
 POLYMARKET_API_SECRET=your_api_secret
 POLYMARKET_API_PASSPHRASE=your_api_passphrase
 
-# Telegram Notifications (optional)
-TELEGRAM_BOT_TOKEN=your_bot_token
-TELEGRAM_CHAT_ID=your_chat_id
+# Discord Notifications (optional)
+DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
 ```
 
 ### Trading Configuration (config/config.json)
@@ -143,16 +142,10 @@ python3 main.py
 | `Q` | Quit gracefully |
 | `E` | Emergency stop (blocks all trading) |
 
-### Telegram Commands
+### Discord Notes
 
-| Command | Description |
-|---------|-------------|
-| `/chart` or `/pnl` | Generate current PnL chart |
-| `/b` or `/balance` | Show wallet balance (USDC + POL) |
-| `/t` or `/positions` | Show active positions |
-| `/r` or `/redeem` | Redeem completed markets (interactive) |
-| `/off` or `/stop` | Emergency shutdown (with confirmation) |
-| `/help` | Show all available commands |
+The bot now sends notifications and charts to Discord via webhook.
+Interactive bot commands are not used in webhook mode.
 
 ## Project Structure
 
@@ -168,7 +161,7 @@ python3 main.py
 │   ├── position_tracker.py     # Real-time position tracking
 │   ├── safety_guard.py         # Safety limits and emergency stop
 │   ├── simple_redeem_collector.py  # Automatic redeem collection
-│   ├── telegram_notifier.py    # Telegram bot integration
+│   ├── discord_notifier.py     # Discord notifier integration
 │   ├── dashboard_multi_ab.py   # Terminal dashboard
 │   ├── polymarket_api.py       # Polymarket API wrapper
 │   ├── pnl_chart_generator.py  # PnL chart generation
@@ -242,7 +235,36 @@ The bot automatically reconnects. If persistent:
 ### Positions not redeeming
 
 1. Wait for oracle resolution (1-2 minutes after market close)
-2. Use `/r` command in Telegram to manually trigger
+2. Manually trigger redeem using keyboard command `M` in the running bot
+
+## Docker / Coolify Deployment
+
+### Docker
+
+```bash
+docker build -t 4coinsbot .
+docker run --rm --env-file .env -v $(pwd)/logs:/app/logs -v $(pwd)/config:/app/config 4coinsbot
+```
+
+### Docker Compose
+
+```bash
+docker compose up -d --build
+```
+
+### Health Checks
+
+- Container health check uses `python /app/healthcheck.py`
+- The bot updates a heartbeat file (`/tmp/4coinsbot.heartbeat`) every 5 seconds
+- `HEARTBEAT_MAX_AGE_SEC` controls stale threshold (default: `120`)
+
+### Coolify Plan
+
+1. Create a new Application in Coolify from this repository.
+2. Use `Dockerfile` build type (or `docker-compose.yml` if preferred).
+3. Configure environment variables from `.env.example` (especially wallet/API and `DISCORD_WEBHOOK_URL`).
+4. Persist `logs` and `config` volumes if required.
+5. Keep default health check command from container (`python /app/healthcheck.py`) for automatic restart on unhealthy state.
 3. Check `logs/` for error messages
 
 ## Important Notes

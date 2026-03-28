@@ -941,7 +941,7 @@ class OrderExecutor:
         if initial_balance is None:
             error_msg = "RPC_UNAVAILABLE_CANNOT_GET_BALANCE"
             print(f"[EXECUTOR] ❌ CRITICAL: Cannot get balance from blockchain!")
-            self._send_telegram_alert(
+            self._send_discord_alert(
                 f"🚨 SELL FAILED: Cannot get balance!\n"
                 f"\nMarket: {market_slug}"
                 f"\nSide: {side}"
@@ -1951,8 +1951,8 @@ class OrderExecutor:
                 for fc in failed_chunks[:3]:  # Show first 3
                     warning_msg += f"\n  • Chunk {fc['chunk']}: {fc['size']:.2f} (attempts: {fc.get('attempts', '?')})"
             
-            print(f"[EXECUTOR] ⚠️  Sending Telegram alert for FINAL remaining balance...")
-            self._send_telegram_alert(warning_msg)
+            print(f"[EXECUTOR] ⚠️  Sending Discord alert for FINAL remaining balance...")
+            self._send_discord_alert(warning_msg)
             
             # Success = False if >10% remains
             success = (final_balance / initial_balance) < 0.1
@@ -1981,26 +1981,20 @@ class OrderExecutor:
             remaining_balance=final_balance  # 🔥 FIX 4: Return final balance
         )
     
-    def _send_telegram_alert(self, message: str):
+    def _send_discord_alert(self, message: str):
         """
-        Send critical notification to Telegram
+        Send critical notification to Discord webhook
         """
-        print(f"[EXECUTOR] [TELEGRAM] {message[:100]}...")  # Debug
+        print(f"[EXECUTOR] [DISCORD] {message[:100]}...")  # Debug
         try:
-            token = os.getenv("TELEGRAM_BOT_TOKEN")
-            chat_id = os.getenv("TELEGRAM_CHAT_ID")
-            
-            if not token or not chat_id:
+            webhook_url = os.getenv("DISCORD_WEBHOOK_URL")
+            if not webhook_url:
                 return
-            
-            url = f"https://api.telegram.org/bot{token}/sendMessage"
-            payload = {
-                "chat_id": chat_id,
-                "text": message
-            }
-            requests.post(url, json=payload, timeout=5)
+
+            payload = {"content": message}
+            requests.post(webhook_url, json=payload, timeout=5)
         except Exception as e:
-            print(f"[EXECUTOR] ⚠️ Telegram alert failed: {e}")
+            print(f"[EXECUTOR] ⚠️ Discord alert failed: {e}")
     
     def _log_order(self, market_slug: str, side: str, contracts: float,
                    price: float, result: OrderResult, order_type: str, fak_attempt: int = 1):

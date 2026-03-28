@@ -21,7 +21,7 @@ from strategy import LateEntryStrategy
 from multi_trader import MultiTrader
 from dashboard_multi_ab import DashboardMultiAB
 from polymarket_api import get_market_outcome
-from telegram_notifier import get_notifier
+from discord_notifier import get_notifier
 from safety_guard import SafetyGuard
 from order_executor import OrderExecutor
 from keyboard_listener import KeyboardListener
@@ -38,7 +38,7 @@ data_feed = None
 multi_trader_instance = None  # Will hold MultiTrader for graceful shutdown
 keyboard_listener = None  # Will hold KeyboardListener for cleanup
 
-# Global redeem positions cache for Telegram /r command
+# Global redeem positions cache for /r command
 redeem_positions_cache = []
 redeem_cache_lock = threading.Lock()
 
@@ -120,7 +120,7 @@ def validate_system():
 
 
 def _get_portfolio_stats(multi_trader, markets_skipped, session_start_time):
-    """Helper to calculate portfolio statistics for Telegram notifications"""
+    """Helper to calculate portfolio statistics for notifications"""
     stats = {}
     
     for coin in COINS:
@@ -408,10 +408,10 @@ def main():
     # Initialize dashboard (pass config for trading status display)
     dashboard = DashboardMultiAB(width=160, coins=COINS, config=config)
     
-    # Initialize Telegram notifier with event callback
-    dashboard.add_event("Initializing Telegram notifier...", 'system')
-    from telegram_notifier import TelegramNotifier
-    notifier = TelegramNotifier(event_callback=lambda msg, t: dashboard.add_event(msg, t))
+    # Initialize Discord notifier with event callback
+    dashboard.add_event("Initializing Discord notifier...", 'system')
+    from discord_notifier import DiscordNotifier
+    notifier = DiscordNotifier(event_callback=lambda msg, t: dashboard.add_event(msg, t))
     
     # Track market start prices for EACH coin separately
     # {coin: {market_slug: price or status}}
@@ -436,7 +436,7 @@ def main():
     redeem_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="redeem")
     
     # ═══════════════════════════════════════════════════════════════
-    # TELEGRAM COMMAND HANDLER - Thread-safe chart generation on demand
+    # COMMAND HANDLER - Thread-safe chart generation on demand
     # ═══════════════════════════════════════════════════════════════
     def handle_chart_command():
         """
@@ -1095,7 +1095,7 @@ def main():
         'shutdown_cancel': handle_shutdown_cancel_callback
     }
     
-    # Start Telegram command listener (daemon thread, won't block shutdown)
+    # Start command listener (daemon thread, won't block shutdown)
     dashboard.add_event("Starting command listener...", 'telegram')
     try:
         notifier.start_command_listener(
@@ -1131,7 +1131,7 @@ def main():
             order_executor=order_executor,
             trader_module=trader_module,
             multi_trader=multi_trader,  # 🔥 FIX: For creating trade records
-            notifier=notifier  # 🔥 FIX: For Telegram notifications
+            notifier=notifier  # 🔥 FIX: For notifications
         )
         
         # Start in background thread (daemon - doesn't block shutdown)
@@ -1384,7 +1384,7 @@ def main():
                 
                 # Send alert
                 alert_msg = f"⚠️ <b>FAILED REDEEM</b>\n\nMarket: <code>{prev_market}</code>\nPosition: {position_info}\nAttempts: {max_attempts}\n\nCheck logs/failed_redeems.log"
-                order_executor._send_telegram_alert(alert_msg)
+                order_executor._send_discord_alert(alert_msg)
                 
                 # Remove from pending
                 del pending_markets[coin][prev_market]
@@ -1813,11 +1813,22 @@ def main():
     print()
     
     loop_counter = 0
+    heartbeat_file = os.getenv("HEARTBEAT_FILE", "/tmp/4coinsbot.heartbeat")
+    last_heartbeat_write = 0.0
     
     # Main loop
     while not stop_flag:
         try:
             loop_counter += 1
+            now = time.time()
+
+            if now - last_heartbeat_write >= 5.0:
+                try:
+                    with open(heartbeat_file, 'w') as f:
+                        f.write(str(int(now)))
+                    last_heartbeat_write = now
+                except Exception:
+                    pass
             
             # Process EACH coin independently
             for coin in COINS:
